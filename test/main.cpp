@@ -20,11 +20,13 @@
 #include <QtCore/QCoreApplication>
 #include "hotplugwatcher.h"
 
+
 int main(int argc, char *argv[])
 {
     QCoreApplication a(argc, argv);
 
 	HotplugWatcher hotplug;
 	qDebug("Hotplug watcher(libQDeviceWatcher test app)\nwbsecg1@gmail.com\n");
+
     return a.exec();
 }

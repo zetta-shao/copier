@@ -29,8 +29,7 @@
 #include <linux/version.h>
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 0)
 #else
-
-#endif
+#endif //LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 0)
 
 #include <sys/un.h>
 #include <sys/ioctl.h>
@@ -46,8 +45,10 @@
 #include <QtCore/QSocketNotifier>
 #elif CONFIG_TCPSOCKET
 #include <QtNetwork/QTcpSocket>
-#endif
-
+#endif //CONFIG_SOCKETNOTIFIER
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
 #define UEVENT_BUFFER_SIZE      2048
 
@@ -95,31 +96,91 @@ bool QDeviceWatcherPrivate::stop()
 	return true;
 }
 
-
-void QDeviceWatcherPrivate::parseDeviceInfo()
-{//zDebug("%s active", qPrintable(QTime::currentTime().toString()));
-	QByteArray data;
+ssize_t QDeviceWatcherPrivate::readsockets(int socketdev, QBuffer *pqBuffer, bool bResetReadPoint, bool bReplaceCR2Zero) {
+    //QByteArray data;
+    ssize_t len;
 #if CONFIG_SOCKETNOTIFIER
-	//socket_notifier->setEnabled(false); //for win
-	data.resize(UEVENT_BUFFER_SIZE*2);
-	data.fill(0);
-	size_t len = read(socket_notifier->socket(), data.data(), UEVENT_BUFFER_SIZE*2);
-	zDebug("read fro socket %d bytes", len);
-	data.resize(len);
-	//socket_notifier->setEnabled(true); //for win
+    //socket_notifier->setEnabled(false); //for win
+    m_qBasisData.resize(65536);
+    m_qBasisData.fill(0);
+    if(bResetReadPoint) lseek(socketdev, 0, SEEK_SET); //zetta: for file
+    len = read(socketdev, m_qBasisData.data(), UEVENT_BUFFER_SIZE*2);
+    zDebug("read fro socket %ld bytes", len);
+    m_qBasisData.resize(static_cast<int>(len));
+    //socket_notifier->setEnabled(true); //for win
 #elif CONFIG_TCPSOCKET
-	data = tcp_socket->readAll();
+    data = tcp_socket->readAll();
 #endif
-	data = data.replace(0, '\n').trimmed(); //In the original line each information is seperated by 0
-	if (buffer.isOpen())
-		buffer.close();
-	buffer.setBuffer(&data);
+    if(bReplaceCR2Zero) m_qBasisData = m_qBasisData.replace(0, '\n').trimmed(); //In the original line each information is seperated by 0
+    if(pqBuffer->isOpen()) pqBuffer->close();
+    pqBuffer->setBuffer(&m_qBasisData);
+    return len;
+}
+
+QSet <QString> QDeviceWatcherPrivate::readlines(int socketdev, QBuffer *pqBuffer) {
+    QSet <QString> strMountsCur;
+    readsockets(socketdev, pqBuffer, true);
+    pqBuffer->open(QIODevice::ReadOnly);
+    while(!pqBuffer->atEnd()) { //buffer.canReadLine() always false?
+        strMountsCur << pqBuffer->readLine().trimmed();
+    }
+    pqBuffer->close();
+    return strMountsCur;
+}
+
+void QDeviceWatcherPrivate::parseDeviceInfo() {
+    //zDebug("%s active", qPrintable(QTime::currentTime().toString()));
+	QByteArray data;
+    ssize_t len = readsockets(static_cast<int>(socket_notifier->socket()), &buffer, false);
+    if(len == 0) { buffer.close(); return; }
 	buffer.open(QIODevice::ReadOnly);
+#if 0
+    bool bPartition = false;
+    while(!buffer.atEnd()) { //buffer.canReadLine() always false?
+        //parseLine(buffer.readLine().trimmed());
+        if(buffer.readLine().trimmed().contains("partition")) {
+            bPartition = true;
+            break;
+        }
+    }
+    if(!bPartition) { buffer.close(); return; }
+    buffer.seek(0);
+#endif
 	while(!buffer.atEnd()) { //buffer.canReadLine() always false?
-		parseLine(buffer.readLine().trimmed());
+        QByteArray oneline = buffer.readLine().trimmed();
+        parseLine(oneline);
+        parseScsiDevice(oneline);
 	}
 	buffer.close();
+}
 
+void QDeviceWatcherPrivate::parseMountInfo()
+{//zDebug("%s active", qPrintable(QTime::currentTime().toString()));
+    QByteArray data;
+    QSet <QString> strMountsCur;
+
+    strMountsCur = readlines(static_cast<int>(socket_notifier->socket()), &buffer);
+
+    for(QString item: strMountsCur-strMounts) {
+        QByteArray line=item.toLocal8Bit();
+        int nB = line.indexOf(' ', 0);
+        if(nB==-1) break;
+        int nE = line.indexOf(' ', nB + 1);
+        if(nE==-1) break;
+        item = line.left(nE).right(nE-nB-1);
+        emitDeviceAdded(item);
+    }
+    for(QString item: strMounts-strMountsCur) {
+        QByteArray line=item.toLocal8Bit();
+        int nB = line.indexOf(' ', 0);
+        if(nB==-1) break;
+        int nE = line.indexOf(' ', nB + 1);
+        if(nE==-1) break;
+        item = line.left(nE).right(nE-nB-1);
+        emitDeviceRemoved(item);
+    }
+
+    strMounts = strMountsCur;
 }
 
 #if CONFIG_THREAD
@@ -170,6 +231,7 @@ void QDeviceWatcherPrivate::run()
 
 bool QDeviceWatcherPrivate::init()
 {
+#if 1
 	struct sockaddr_nl snl;
 	const int buffersize = 16 * 1024 * 1024;
 	int retval;
@@ -207,7 +269,6 @@ bool QDeviceWatcherPrivate::init()
 		if (retval == 0)
 			snl.nl_pid = _snl.nl_pid;
 	}
-
 #if CONFIG_SOCKETNOTIFIER
 	socket_notifier = new QSocketNotifier(netlink_socket, QSocketNotifier::Read, this);
 	connect(socket_notifier, SIGNAL(activated(int)), SLOT(parseDeviceInfo())); //will always active
@@ -221,13 +282,20 @@ bool QDeviceWatcherPrivate::init()
 		return false;
 	}
 #endif
+#else
+    netlink_socket = open("/proc/mounts", O_RDONLY);
+    socket_notifier = new QSocketNotifier(netlink_socket, QSocketNotifier::Write, this);
+    connect(socket_notifier, SIGNAL(activated(int)), SLOT(parseMountInfo())); //will always active
+    socket_notifier->setEnabled(false);
+    strMounts = readlines(static_cast<int>(socket_notifier->socket()), &buffer);
+#endif
 	return true;
 }
 
 void QDeviceWatcherPrivate::parseLine(const QByteArray &line)
 {
-	zDebug("%s", line.constData());
-#define USE_REGEXP 0
+    zDebug("-> %s", line.constData());
+ #define USE_REGEXP 0
 #if USE_REGEXP
 	QRegExp rx("(\\w+)(?:@/.*/block/.*/)(\\w+)\\W*");
 	//QRegExp rx("(add|remove|change)@/.*/block/.*/(\\w+)\\W*");
@@ -235,13 +303,13 @@ void QDeviceWatcherPrivate::parseLine(const QByteArray &line)
 		return;
 	QString action_str = rx.cap(1).toLower();
 	QString dev = "/dev/" + rx.cap(2);
-#else
-	if (!line.contains("/block/")) //hotplug
-		return;
-	QString action_str = line.left(line.indexOf('@')).toLower();
+#else    
+    if (!line.contains("/block/")) //hotplug
+        return;
+    QString action_str = line.left(line.indexOf('@')).toLower();
 	QString dev = "/dev/" + line.right(line.length() - line.lastIndexOf('/') - 1);
 #endif //USE_REGEXP
-	QDeviceChangeEvent *event = 0;
+    QDeviceChangeEvent *event = nullptr;
 
 	if (action_str==QLatin1String("add")) {
 		emitDeviceAdded(dev);
@@ -256,11 +324,37 @@ void QDeviceWatcherPrivate::parseLine(const QByteArray &line)
 
 	zDebug("%s %s", qPrintable(action_str), qPrintable(dev));
 
-	if (event != 0 && !event_receivers.isEmpty()) {
+    if (event != nullptr && !event_receivers.isEmpty()) {
 		foreach(QObject* obj, event_receivers) {
 			QCoreApplication::postEvent(obj, event, Qt::HighEventPriority);
 		}
 	}
 }
+
+void QDeviceWatcherPrivate::parseScsiDevice(const QByteArray &line)
+{
+    zDebug("-> %s", line.constData());
+    if (!line.contains("/scsi_generic/")) //hotplug
+        return;
+    QString action_str = line.left(line.indexOf('@')).toLower();
+    QString dev = "/dev/" + line.right(line.length() - line.lastIndexOf('/') - 1);
+    QDeviceChangeEvent *event = nullptr;
+
+    if (action_str==QLatin1String("add")) {
+        emitScsiAdded(dev);
+        event = new QDeviceChangeEvent(QDeviceChangeEvent::Add, dev);
+    }
+
+    zDebug("%s (scsi) %s", qPrintable(action_str), qPrintable(dev));
+
+    if (event != nullptr && !event_receivers.isEmpty()) {
+        foreach(QObject* obj, event_receivers) {
+            QCoreApplication::postEvent(obj, event, Qt::HighEventPriority);
+        }
+    }
+}
+
+
+//SUBSYSTEM=scsi_generic"
 
 #endif //Q_OS_LINUX

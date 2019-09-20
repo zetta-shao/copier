@@ -56,6 +56,7 @@ signals:
 	void deviceAdded(const QString& dev);
 	void deviceChanged(const QString& dev); //when umounting the device
 	void deviceRemoved(const QString& dev);
+    void scsiAdded(const QString& dev);
 
 protected:
 	bool running;

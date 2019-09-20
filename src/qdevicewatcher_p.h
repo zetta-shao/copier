@@ -53,6 +53,7 @@
 #endif //Q_OS_WIN
 #include <QtCore/QList>
 #include <QtCore/QThread>
+#include <QSet>
 
 class QDeviceWatcher;
 class QDeviceWatcherPrivate
@@ -84,11 +85,13 @@ public:
 	void emitDeviceChanged(const QString& dev); //Linux: when umounting the device
 	void emitDeviceRemoved(const QString& dev);
 	void emitDeviceAction(const QString& dev, const QString& action);
+    void emitScsiAdded(const QString& dev);
 
 	QList<QObject*> event_receivers;
 
 private slots:
 	void parseDeviceInfo();
+    void parseMountInfo();
 
 private:
 	QDeviceWatcher *watcher;
@@ -98,16 +101,23 @@ private:
 	virtual void run();
 #endif //CONFIG_THREAD
 #if defined(Q_OS_LINUX)
+    QByteArray m_qBasisData;
 	QBuffer buffer;
+    QSet <QString> strMounts;
 	void parseLine(const QByteArray& line);
+    void parseScsiDevice(const QByteArray &line);
+    ssize_t readsockets(int socketdev, QBuffer *pqBuffer, bool bResetReadPoint=false, bool bReplaceCR2Zero=true);
+    QSet <QString> readlines(int socketdev, QBuffer *pqBuffer);
 # if CONFIG_TCPSOCKET
 	class QTcpSocket *tcp_socket;
 # elif CONFIG_SOCKETNOTIFIER
 	class QSocketNotifier *socket_notifier;
+    class QSocketNotifier *mount_notifier;
 # endif
 
 	QString bus_name;
 	int netlink_socket;
+    int proc_mounts;
 #elif defined(Q_OS_WIN32)
 	HWND hwnd;
 #elif defined(Q_OS_WINCE)

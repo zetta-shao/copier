@@ -82,6 +82,12 @@ void QDeviceWatcherPrivate::emitDeviceRemoved(const QString &dev)
 		qWarning("invoke deviceRemoved failed");
 }
 
+void QDeviceWatcherPrivate::emitScsiAdded(const QString &dev)
+{
+    if (!QMetaObject::invokeMethod(watcher, "scsiAdded", Q_ARG(QString, dev)))
+        qWarning("invoke scsiAdded failed");
+}
+
 void QDeviceWatcherPrivate::emitDeviceAction(const QString &dev, const QString &action)
 {
 	QString a(action.toLower());
